@@ -1,88 +1,89 @@
 #include "config.h"
-#include "packet-pldm-base.h"
+//#include "packet-pldm-base.h"
 #include <epan/packet.h>
 #include <stdint.h>
+#include <wiretap/wtap.h>
 
-#define PLDM_MIN_LENGTH 6
+#define PLDM_MIN_LENGTH 4
 #define PLDM_MAX_TYPES 8
 
 static const value_string directions[]={
-    {01, "request"},
-    {00, "response"}
+    {0, "response"},
+    {1, "reserved"},
+    {2, "request"},
+    {3, "async/unack"},
+    {0, NULL}
 };
 
-
-static const value_string completionCodes[]={
-	{0, "Success"},
-    {1, "ERROR"},
-    {2, "ERROR_INVALID_DATA"},
-    {3, "ERROR_INVALID_LENGTH"}
+static const value_string pldm_types[] = {
+    { 0, "PLDM Messaging and Discovery"},
+    { 1 ,"PLDM for SMBIOS"},
+    { 2, "PLDM Platform Monitoring and Control"},
+    { 3, "PLDM for BIOS Control and Configuration"},
+    { 4, "PLDM for FRU Data"},
+    { 5, "PLDM for Firmware Update"},
+    { 6, "PLDM for Redfish Device Enablement"},
+    { 63,"OEM Specific"},
+    { 0, NULL}
 };
 
-static int
-dissect_pldm(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
+struct packet_data {
+    guint8 direction;
+    guint8 instance_id;
+};
+static int proto_pldm=-1;
+static int ett_pldm=-1;
+
+static int hf_direction = -1;
+static int hf_instance_id = -1;
+static int hf_header_version= -1;
+static int hf_pldm_type= -1;
+static int hf_reserve = -1;
+static dissector_table_t pldm_dissector_table;
+
+static int dissect_pldm(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U_)
 {
     col_set_str(pinfo->cinfo, COL_PROTOCOL, "PLDM");
     col_clear(pinfo->cinfo,COL_INFO);
 
+    tvbuff_t *next_tvb;
     guint len, direction;
-    gint offset;
-    guint8 dest, instID, ver4, specs, pldmCmd;
+    guint8 instID, pldm_type, offset;
     int reported_length;
     len=tvb_reported_length(tvb);
-    // g_print("line 231 : %d\t%d\n", ett_pldm, ++out);
-    direction = tvb_get_guint8(tvb, 2);
     if (len < PLDM_MIN_LENGTH) {
         col_add_fstr(pinfo->cinfo, COL_INFO, "Packet length %u, minimum %u",
                      len, PLDM_MIN_LENGTH);
         return tvb_captured_length(tvb);
     }
-   if(direction>1){
-        col_add_fstr( pinfo->cinfo, COL_INFO, "Packet invalid" );
-        return tvb_captured_length(tvb);
-    }
-    else if (tree){
-        proto_item *ti = proto_tree_add_item(tree, proto_pldm, tvb, 0, -1, ENC_NA);
-        proto_tree *foo_tree = proto_item_add_subtree(ti, ett_pldm);
-        offset= 0;
-        direction = tvb_get_guint8(tvb, 2);
-        proto_tree_add_item(foo_tree, hf_destination, tvb, offset, 1, ENC_LITTLE_ENDIAN);
-        dest = tvb_get_guint8(tvb, offset);
-        offset+=1;
-        proto_tree_add_item(foo_tree, hf_source, tvb, offset, 1, ENC_LITTLE_ENDIAN);
-        offset+=1;
-        proto_tree_add_item(foo_tree, hf_direction, tvb, offset, 1, ENC_LITTLE_ENDIAN);
-        offset+=1;
-        proto_tree_add_item(foo_tree, hf_reserve, tvb, offset, 1, ENC_LITTLE_ENDIAN);
-        proto_tree_add_item(foo_tree, hf_instanceId, tvb, offset, 1, ENC_LITTLE_ENDIAN);
+    if (tree) {
+        /* first byte is the MCTP msg type */
+        offset = 1;
+        proto_item *ti = proto_tree_add_item(tree, proto_pldm, tvb, offset, -1, ENC_NA);
+        proto_tree *pldm_tree = proto_item_add_subtree(ti, ett_pldm);
+
+        proto_tree_add_item(pldm_tree, hf_direction, tvb, offset, 1, ENC_LITTLE_ENDIAN);
+        direction = tvb_get_bits8(tvb, offset*8, 2);
+        proto_tree_add_item(pldm_tree, hf_reserve, tvb, offset, 1, ENC_LITTLE_ENDIAN);
+        proto_tree_add_item(pldm_tree, hf_instance_id, tvb, offset, 1, ENC_LITTLE_ENDIAN);
         instID= tvb_get_guint8(tvb, offset);
         instID=instID & 0x1F;
-        offset+=1;
-        ver4= tvb_get_guint8(tvb, offset);
-        specs= ver4 & 0x3F;
-        proto_tree_add_item(foo_tree, hf_headerVersion, tvb, offset, 1, ENC_LITTLE_ENDIAN);
-        proto_tree_add_item(foo_tree, hf_pldmSpec, tvb, offset, 1, ENC_LITTLE_ENDIAN);
-        offset+=1;
-        pldmCmd = tvb_get_guint8(tvb, offset);
-        proto_tree_add_item(foo_tree, hf_pldmCmdType, tvb, offset, 1, ENC_LITTLE_ENDIAN);
-        reported_length = tvb_reported_length_remaining(tvb, 6);
+        //instID = tvb_get_bits8(tvb, offset*8+3,  5);
+        offset +=1;
+        pldm_type = tvb_get_bits8(tvb, offset*8 +2, 6);
+        proto_tree_add_item(pldm_tree, hf_header_version, tvb, offset, 1, ENC_LITTLE_ENDIAN);
+        proto_tree_add_item(pldm_tree, hf_pldm_type, tvb, offset, 1, ENC_LITTLE_ENDIAN);
+        offset +=1;
+        next_tvb = tvb_new_subset_remaining(tvb, offset);
+        offset +=1;
+        reported_length = tvb_reported_length_remaining(tvb, offset);
 
-	if (reported_length >= 1) {
-        	if (direction== 0) {//completion byte in response
-            		offset+=1;
-        		    proto_tree_add_item(foo_tree, hf_resCompletion, tvb, offset, 1, ENC_LITTLE_ENDIAN);
-    		}
-            if(specs==0){//base spec
-                // base_spec_cmds(pldmCmd, tvb, foo_tree, offset, direction, instID);
-                dissect_base(tvb, pinfo, foo_tree, offset, pldmCmd, direction, instID, data);
-                // g_print("line 231 : %d\n", t);
-                
-            }
-            
-    	}
-    		
-    	
-	}
+        struct packet_data d = {direction, instID};
+        if (reported_length >= 1) {
+            dissector_try_uint_new(pldm_dissector_table, pldm_type & 0x3f, next_tvb, pinfo, pldm_tree, true, (void *)&d);
+            return tvb_captured_length(tvb);
+        }
+    }
     
     return tvb_captured_length(tvb);
 }
@@ -91,61 +92,36 @@ void
 proto_register_pldm(void)
 {
      static hf_register_info hf[] = {
-         { &hf_source,
-            { "Msg Source", "pldm.source",
-            FT_UINT8, BASE_DEC,
-            NULL, 0x0,
-            NULL, HFILL }
-        },
-        { &hf_destination,
-            { "Msg Destination", "pldm.dest",
-            FT_UINT8, BASE_DEC,
-            NULL, 0x0,
-            NULL, HFILL }
-        },
         { &hf_direction,
             { "Msg Direction", "pldm.direction",
             FT_UINT8, BASE_DEC,
-            VALS(directions), 0x0,
+            VALS(directions), 0xc0,
             NULL, HFILL }
         },
         { &hf_reserve,
-            { "PLDM Reserve", "pldm.r",
+            { "PLDM Reserve", "pldm.rsvd",
             FT_UINT8, BASE_DEC,
-            NULL, 0xE0,
+            NULL, 0x20,
             NULL, HFILL }
         },
-        { &hf_instanceId,
-        	{ "PLDM Instance Id", "pldm.instance",
-        	  FT_UINT8, BASE_DEC,
-        	  NULL, 0x1F,
-        	  NULL, HFILL}
+        { &hf_instance_id,
+            { "PLDM Instance Id", "pldm.instance",
+              FT_UINT8, BASE_DEC,
+              NULL, 0x1F,
+              NULL, HFILL}
          },
-        { &hf_headerVersion,{
-        	"PLDM Header Version", "pldm.hdr",
-        	FT_UINT8, BASE_DEC,
-        	NULL, 0xC0,
-        	NULL, HFILL}
+        { &hf_header_version,{
+            "PLDM Header Version", "pldm.hdr",
+            FT_UINT8, BASE_DEC,
+            NULL, 0xC0,
+            NULL, HFILL}
          },
-         { &hf_pldmSpec,{
-         	"PLDM Spec", "pldm.spec",
-         	FT_UINT8, BASE_DEC,
-         	VALS(specNames), 0x3F,
-         	NULL, HFILL}
+	 { &hf_pldm_type,{
+             "PLDM Command Type", "pldm.type",
+             FT_UINT8, BASE_HEX,
+             VALS(pldm_types), 0x3f,
+             NULL, HFILL}
          },
-         { &hf_pldmCmdType,{
-         	"PLDM Command Type", "pldm.baseCmd",
-         	FT_UINT8, BASE_HEX,
-         	VALS(pldmBaseCmd), 0x0,
-         	NULL, HFILL}
-         },
-         { &hf_resCompletion,{
-         	"Completion Response", "pldm.res",
-         	FT_UINT8, BASE_DEC,
-         	VALS(completionCodes), 0x0,
-         	NULL, HFILL}
-         },
-        
     };
     
     static gint *ett[] = {
@@ -157,24 +133,21 @@ proto_register_pldm(void)
         "PLDM",          /* short_name  */
         "pldm"           /* filter_name */
         );
-    g_print("here at 502\n");
     proto_register_field_array(proto_pldm, hf, array_length(hf));
     proto_register_subtree_array(ett, array_length(ett));
-    register_dissector("pldm",dissect_pldm, proto_pldm);
+    pldm_dissector_table = register_dissector_table("pldm.type", "PLDM type",
+                                                    proto_pldm, FT_UINT8,
+                                                    BASE_HEX);
 }
 
 
 void
-proto_reg_handoff_foo(void)
+proto_reg_handoff_pldm(void)
 {
-    static dissector_handle_t foo_handle, base_handle;
-    g_print("here at 512\n");
-    base_handle = create_dissector_handle(dissect_base, proto_pldm_base);
-    
-    dissector_add_uint("wtap_encap",WTAP_ENCAP_USER1, base_handle);
-    foo_handle = create_dissector_handle(dissect_pldm, proto_pldm);
-    dissector_add_uint("wtap_encap",WTAP_ENCAP_USER0, foo_handle);
-     
+    dissector_handle_t pldm_handle;
+    pldm_handle = create_dissector_handle(dissect_pldm, proto_pldm);
+    dissector_add_uint("wtap_encap",WTAP_ENCAP_USER0, pldm_handle);
+    dissector_add_uint("mctp.type", 1, pldm_handle);
 }
 
 
