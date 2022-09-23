@@ -454,7 +454,6 @@ proto_register_base(void)
         "PLDM_B",             /* short_name  */
         "pldm.base"           /* filter_name */
         );
-    g_print("here at 505\n");
     proto_register_field_array(proto_pldm_base, hf, array_length(hf));
 }
 

@@ -163,7 +163,7 @@ set(CLEAN_ASN1_DISSECTOR_SRC
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-pkixqualified.c
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-pkixtsp.c
         ${CMAKE_CURRENT_SOURCE_DIR}/packet-pldm.c
-	${CMAKE_CURRENT_SOURCE_DIR}/packet-base.c
+	${CMAKE_CURRENT_SOURCE_DIR}/packet-pldm-base.c
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-pres.c
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-q932.c
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-q932-ros.c
