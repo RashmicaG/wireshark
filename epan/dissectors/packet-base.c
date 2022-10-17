@@ -150,52 +150,44 @@ static int print_version_field(guint8 bcd, char *buffer, size_t buffer_size)
 		buffer_size -= rc;                              \
 	} while (0);
 
-void ver2str(const ver32_t *version, char *buffer, size_t buffer_size)
+void ver2str(tvbuff_t *tvb, int offset, char *buf_ptr, size_t buffer_size)
 {
 	int rc;
-//	size_t original_size;
-//    original_size = buffer_size;
-    if(version-> major != 0xff){
-	rc = print_version_field(version->major, buffer, buffer_size);
-	POINTER_MOVE(rc, buffer, buffer_size);
-	rc = snprintf(buffer, buffer_size, ".");
-    }else{
-       
-        rc = snprintf(buffer, buffer_size, "-");
-        POINTER_MOVE(rc, buffer, buffer_size);//reach minor
-    }
-    if(version-> minor != 0xff){
-	POINTER_MOVE(rc, buffer, buffer_size);
-	rc = print_version_field(version->minor, buffer, buffer_size);
-	POINTER_MOVE(rc, buffer, buffer_size);
-    }else{
-        
-        rc = snprintf(buffer, buffer_size, "-");
-        POINTER_MOVE(rc, buffer, buffer_size);//reach update
-    }
-	if (version->update != 0xff) {
-		rc = snprintf(buffer, buffer_size, ".");
-		POINTER_MOVE(rc, buffer, buffer_size);
-		rc = print_version_field(version->update, buffer, buffer_size);
-		POINTER_MOVE(rc, buffer, buffer_size);
-	}else{
-        rc = snprintf(buffer, buffer_size, "-");
-        POINTER_MOVE(rc, buffer, buffer_size);//reach alpha
+        guint8 major = tvb_get_guint8(tvb, offset);
+        offset+=1;
+        guint8 minor = tvb_get_guint8(tvb, offset);
+        offset+=1;
+        guint8 update = tvb_get_guint8(tvb, offset);
+        offset+=1;
+        guint8 alpha = tvb_get_guint8(tvb, offset);
 
-    }
-	if (version->alpha != 0xff) {
-		rc = snprintf(buffer, buffer_size, "%c", version->alpha);
-		POINTER_MOVE(rc, buffer, buffer_size);
-	}
-    else{
-        rc = snprintf(buffer, buffer_size, "-");
-    }
-	// return original_size - buffer_size;
+	// major, minor and update fields are all BCD encoded
+        if (major != 0xff) {
+            rc = print_version_field(major, buf_ptr, buffer_size);
+            POINTER_MOVE(rc, buf_ptr, buffer_size);
+            rc = snprintf(buf_ptr, buffer_size, ".");
+            POINTER_MOVE(rc, buf_ptr, buffer_size);
+        }
+        if (minor != 0xff) {
+            rc = print_version_field(minor, buf_ptr, buffer_size);
+            POINTER_MOVE(rc, buf_ptr, buffer_size);
+        }
+        if (update != 0xff) {
+            rc = snprintf(buf_ptr, buffer_size, ".");
+            POINTER_MOVE(rc, buf_ptr, buffer_size);
+            rc = print_version_field(update, buf_ptr, buffer_size);
+            POINTER_MOVE(rc, buf_ptr, buffer_size);
+        }
+        if (alpha != 0x00) {
+            rc = snprintf(buf_ptr, buffer_size, "%c", alpha);
+            POINTER_MOVE(rc, buf_ptr, buffer_size);
+        }
 }
 
 int 
 dissect_base(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *p_tree, void* data){
     struct packet_data *d = (struct packet_data*) data;
+    static uint8_t pldmT = -1;
 
     guint8 instID = d->instance_id;
     guint8 request = d->direction;
@@ -237,11 +229,10 @@ dissect_base(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *p_tree, void* da
             offset+=4;
             proto_tree_add_item(p_tree, hf_TransferFlag, tvb, offset, 1, ENC_LITTLE_ENDIAN);
             offset+=1;
-            char buffer[16] = {0};
-            const ver32_t* buf;
-            buf = (ver32_t*)tvb_get_ptr(tvb, offset, 4);//check;
-            ver2str(buf, buffer, sizeof(buffer));
+            char buffer[10];
+            ver2str(tvb, offset, buffer, 10);
             proto_tree_add_string(p_tree, hf_pldm_version, tvb, offset, 4, buffer);
+            //possibly more than one entry
         }
         break;
     case 04: //GetPLDMTypes
@@ -262,7 +253,6 @@ dissect_base(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *p_tree, void* da
         break;
     case 05: //GetPLDMCommands
 	     //untested
-        static uint8_t pldmT;
         if (request) {
             pldmT=tvb_get_guint8(tvb, offset);//error! reponse depends on this
             // this is ok for now because values 7 -> 62 are reserved
@@ -272,9 +262,8 @@ dissect_base(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *p_tree, void* da
             pldmTI[instID][pldmT]=1;
             proto_tree_add_item(p_tree, hf_pldmSpec8, tvb, offset, 1, ENC_LITTLE_ENDIAN);
             offset+=1;
-            char buffer[16] = {0};
-            const ver32_t* buf = (ver32_t*)tvb_get_ptr(tvb, offset, 4);
-            ver2str(buf, buffer, sizeof(buffer));
+            char buffer[10];
+            ver2str(tvb, offset, buffer, 10);
             proto_tree_add_string(p_tree, hf_pldm_version, tvb, offset, 4, buffer);
         }
         else if (!request) {
