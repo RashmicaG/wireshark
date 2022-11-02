@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "packet-pldm-base.h"
 
+// BIOS table
 static int proto_pldm_bios=-1;
 static int hf_pldm_cmd=-1;
 static int hf_completion_code=-1;
@@ -10,6 +11,10 @@ static int hf_bios_table_type=-1;
 static int hf_bios_next_data_handle=-1;
 static int hf_bios_transfer_flag=-1;
 static int hf_bios_attr_handle=-1;
+
+// Date and Time
+static int hf_pldm_time=-1;
+static int hf_pldm_date=-1;
 
 static const value_string pldm_cmds[] ={
     {0x01, "GetBIOSTable"},
@@ -75,6 +80,8 @@ static const value_string transfer_flags[] ={
     {0, NULL}
 };
 
+#define BCD44_TO_DEC(x)  ((((x)&0xf0) >> 4) * 10 + ((x)&0x0f))
+
 int
 dissect_bios(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *p_tree, void* data)
 {
@@ -82,33 +89,36 @@ dissect_bios(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *p_tree, void* da
     guint8 request = d->direction;
     guint8 pldm_cmd = tvb_get_guint8(tvb, 0);
     guint8 offset = 0;
+    guint8 hour, min, sec;
     proto_tree_add_item(p_tree, hf_pldm_cmd, tvb, offset, 1, ENC_LITTLE_ENDIAN);
-    offset +=1;
+    offset += 1;
     if (!request){
         proto_tree_add_item(p_tree, hf_completion_code, tvb, 1, 1, ENC_LITTLE_ENDIAN);
         guint8 completion_code = tvb_get_guint8(tvb, offset);
         if (completion_code)
             return tvb_captured_length(tvb);
-        offset +=1;
+        offset += 1;
     }
     switch(pldm_cmd){
     case 0x1: //Get BIOS Table
         if (request){
             proto_tree_add_item(p_tree, hf_bios_data_handle, tvb, offset, 4, ENC_LITTLE_ENDIAN);
-            offset +=4;
+            offset += 4;
             proto_tree_add_item(p_tree, hf_bios_transfer_op_flag, tvb, offset, 1, ENC_LITTLE_ENDIAN);
-            offset +=1;
+            offset += 1;
             proto_tree_add_item(p_tree, hf_bios_table_type, tvb, offset, 1, ENC_LITTLE_ENDIAN);
         } else {
             proto_tree_add_item(p_tree, hf_bios_next_data_handle, tvb, offset, 4, ENC_LITTLE_ENDIAN);
-            offset +=4;
+            offset += 4;
             proto_tree_add_item(p_tree, hf_bios_transfer_flag, tvb, offset, 1, ENC_LITTLE_ENDIAN);
+            offset += 1;
+            // TODO add tables
         }
         break;
     case 0x07: //Set BIOS Attribute Current Value by Handle
         if (request){
             proto_tree_add_item(p_tree, hf_bios_data_handle, tvb, offset, 4, ENC_LITTLE_ENDIAN);
-            offset +=4;
+            offset += 4;
             proto_tree_add_item(p_tree, hf_bios_transfer_flag, tvb, offset, 1, ENC_LITTLE_ENDIAN);
         } else {
             proto_tree_add_item(p_tree, hf_bios_next_data_handle, tvb, offset, 4, ENC_LITTLE_ENDIAN);
@@ -117,17 +127,38 @@ dissect_bios(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *p_tree, void* da
     case 0x08: //Get BIOS Attribute Current Value by Handle
         if (request){
             proto_tree_add_item(p_tree, hf_bios_data_handle, tvb, offset, 4, ENC_LITTLE_ENDIAN);
-            offset +=4;
+            offset += 4;
             proto_tree_add_item(p_tree, hf_bios_transfer_op_flag, tvb, offset, 1, ENC_LITTLE_ENDIAN);
-            offset +=1;
+            offset += 1;
             proto_tree_add_item(p_tree, hf_bios_attr_handle, tvb, offset, 2, ENC_LITTLE_ENDIAN);
         } else {
             proto_tree_add_item(p_tree, hf_bios_next_data_handle, tvb, offset, 4, ENC_LITTLE_ENDIAN);
-            offset +=4;
+            offset += 4;
             proto_tree_add_item(p_tree, hf_bios_transfer_flag, tvb, offset, 1, ENC_LITTLE_ENDIAN);
+	    //TODO attribute data
         }
         break;
-    case 0x0c: //Get Data and Time
+    case 0x0c: //Get Date and Time
+        if (!request){
+            sec = BCD44_TO_DEC(tvb_get_guint8(tvb, offset));
+            min = BCD44_TO_DEC(tvb_get_guint8(tvb, offset+1));
+            hour = BCD44_TO_DEC(tvb_get_guint8(tvb, offset+2));
+            if (hour > 23 || min > 59 || sec > 59)
+                return -1;
+            char time[9];
+            snprintf(time, 9, "%02d:%02d:%02d", hour, min, sec);
+            proto_tree_add_string(p_tree, hf_pldm_time, tvb, offset, 3, time);
+            offset += 3;
+            guint8 day = BCD44_TO_DEC(tvb_get_guint8(tvb, offset));
+            guint8 month = BCD44_TO_DEC(tvb_get_guint8(tvb, offset+1));
+            guint16 year = BCD44_TO_DEC(tvb_get_guint8(tvb, offset+3)) * 100 + BCD44_TO_DEC(tvb_get_guint8(tvb, offset+2));
+            if (day > 31 || day < 1 || month > 12 || month < 1)
+		return -1;
+
+            char date[11];
+            snprintf(date, 11, "%02d/%02d/%04d", day, month, year);
+            proto_tree_add_string(p_tree, hf_pldm_date, tvb, offset, 4, date);
+        }
         break;
     default:
         col_append_fstr(pinfo->cinfo, COL_INFO, "Unsupported or Invalid PLDM command");
@@ -175,6 +206,18 @@ proto_register_bios(void)
         { &hf_bios_attr_handle,{
             "Attribute handle", "pldm.bios.attr.handle",
             FT_UINT16, BASE_HEX,
+            NULL, 0x0,
+            NULL, HFILL}
+         },
+        { &hf_pldm_time,{
+            "Time", "pldm.bios.time",
+            FT_STRING, BASE_NONE,
+            NULL, 0x0,
+            NULL, HFILL}
+         },
+        { &hf_pldm_date,{
+            "Date", "pldm.bios.date",
+            FT_STRING, BASE_NONE,
             NULL, 0x0,
             NULL, HFILL}
          },
